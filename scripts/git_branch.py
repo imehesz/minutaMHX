@@ -1,9 +1,10 @@
 """
-PlatformIO pre-build script: inject git branch and short SHA into
-CROSSPOINT_VERSION for development environments.
+PlatformIO pre-build script: inject CROSSPOINT_VERSION as MAJOR.MINOR.YYYYMMDD,
+where MAJOR.MINOR comes from [crosspoint] version and the date is the build day.
 
-Results in a version string like:  1.1.0-dev-feat-kosync-xpath-05c6cf8
-Release environments are unaffected; they set CROSSPOINT_VERSION in the ini.
+Release builds:      1.4.20261027
+Development builds:  1.4.20261027-dev-feat-kosync-xpath-05c6cf8
+The RC environment keeps its own CROSSPOINT_VERSION from the ini.
 """
 
 import configparser
@@ -80,13 +81,14 @@ def get_base_version(project_dir):
 def inject_version(env):
     project_dir = env['PROJECT_DIR']
 
-    # Development environments get their version from the current branch/SHA.
-    # Release environments already define CROSSPOINT_VERSION in platformio.ini.
-    if env['PIOENV'] == 'default':
-        base_version = get_base_version(project_dir)
-        branch = get_git_branch(project_dir)
-        short_sha = get_git_short_sha(project_dir)
-        version_string = f'{base_version}-dev-{branch}-{short_sha}'
+    if env['PIOENV'] != 'gh_release_rc':
+        base_version = f'{get_base_version(project_dir)}.{time.strftime("%Y%m%d")}'
+        if env['PIOENV'] == 'default':
+            branch = get_git_branch(project_dir)
+            short_sha = get_git_short_sha(project_dir)
+            version_string = f'{base_version}-dev-{branch}-{short_sha}'
+        else:
+            version_string = base_version
         env.Append(CPPDEFINES=[
             ('CROSSPOINT_VERSION', f'\\\"{version_string}\\\"'),
         ])

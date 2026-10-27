@@ -105,6 +105,12 @@ void SettingsActivity::rebuildSettingsLists() {
     deviceSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
   });
 
+  // Read-only rows: SettingAction::None makes Confirm a no-op.
+  addSettingsSection("About", [&] {
+    deviceSettings.push_back(SettingInfo::Action(StrId::STR_VERSION, SettingAction::None));
+    deviceSettings.push_back(SettingInfo::Action(StrId::STR_ABOUT_INFO, SettingAction::None));
+  });
+
   // Expansion state follows the number of sections; existing states are kept.
   sectionExpanded.resize(categoryCount);
   for (auto& expanded : sectionExpanded) {
@@ -452,6 +458,9 @@ void SettingsActivity::openSleepTimeoutPicker() {
 }
 
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.nameId == StrId::STR_VERSION) {
+    return CROSSPOINT_VERSION;
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }

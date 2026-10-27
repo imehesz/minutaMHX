@@ -597,6 +597,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
 
   renderer.drawCenteredText(UI_10_FONT_ID, statusY, tr(STR_SLEEPING), true, EpdFontFamily::ITALIC);
 
+  renderer.drawCenteredText(SMALL_FONT_ID, pageHeight - 42, CROSSPOINT_VERSION);
   renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
