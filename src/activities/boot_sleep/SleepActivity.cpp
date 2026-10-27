@@ -591,7 +591,7 @@ void SleepActivity::renderDefaultSleepScreen() const {
 
   renderer.drawImage(Logo120, (pageWidth - logoSize) / 2, logoY, logoSize, logoSize);
 
-  renderer.drawCenteredText(UI_18_FONT_ID, titleY, "Minuta", true, EpdFontFamily::REGULAR);
+  renderer.drawCenteredText(UI_18_FONT_ID, titleY, "MinutaMHX", true, EpdFontFamily::REGULAR);
 
   renderer.drawCenteredText(UI_10_FONT_ID, statusY, tr(STR_SLEEPING), true, EpdFontFamily::ITALIC);
 

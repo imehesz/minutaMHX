@@ -1071,6 +1071,60 @@
     .move-btn:hover {
       background-color: #e6f7f4;
     }
+    /* Text editor (minutaMHX) */
+    .edit-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 1.1em;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.15s;
+    }
+    .edit-btn:hover {
+      background-color: #f4ecf7;
+    }
+    .new-file-action-btn {
+      background-color: #8e44ad;
+    }
+    .new-file-action-btn:hover {
+      background-color: #7d3c98;
+    }
+    .modal.editor-mode {
+      max-width: 900px;
+      display: flex;
+      flex-direction: column;
+    }
+    .editor-textarea {
+      width: 100%;
+      height: 60vh;
+      padding: 12px;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+      font-size: 0.95em;
+      line-height: 1.5;
+      background: var(--card-bg);
+      color: var(--font-color);
+      resize: vertical;
+      box-sizing: border-box;
+      tab-size: 4;
+    }
+    .editor-footer {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .editor-footer .editor-status {
+      flex: 1;
+      font-size: 0.85em;
+      color: var(--label-color);
+    }
+    .editor-footer button {
+      width: auto;
+      margin: 0;
+    }
     .actions-col {
       width: 140px;
       text-align: center;
@@ -1517,6 +1571,7 @@
 
   <div class="action-buttons">
     <button class="action-btn upload-action-btn" onclick="openUploadModal()">📤 Upload</button>
+    <button class="action-btn new-file-action-btn" onclick="openNewFileModal()">📝 New File</button>
     <button class="action-btn folder-action-btn" onclick="openFolderModal()">📁 New Folder</button>
     <button class="action-btn delete-action-btn" onclick="openDeleteSelectedModal()">🗑️ Delete Selected</button>
   </div>
@@ -1779,6 +1834,34 @@
   </div>
 </div>
 
+<!-- New File Modal -->
+<div class="modal-overlay" id="newFileModal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeNewFileModal()">&times;</button>
+    <h3>📝 New File</h3>
+    <div class="folder-form">
+      <p class="file-info">Create a new text file in <strong id="newFilePathDisplay"></strong></p>
+      <input type="text" id="newFileName" class="folder-input" placeholder="notes.txt" oninput="document.getElementById('createNewFileBtn').disabled = !this.value.trim();">
+      <button class="folder-btn" id="createNewFileBtn" onclick="createNewFile()" disabled>Create &amp; Edit</button>
+      <button class="delete-btn-cancel" onclick="closeNewFileModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Text Editor Modal -->
+<div class="modal-overlay" id="editorModal">
+  <div class="modal editor-mode">
+    <button class="modal-close" onclick="closeEditor()">&times;</button>
+    <h3>📝 <span id="editorFileName"></span></h3>
+    <textarea id="editorText" class="editor-textarea" spellcheck="false"></textarea>
+    <div class="editor-footer">
+      <span class="editor-status" id="editorStatus"></span>
+      <button class="rename-btn-confirm" id="editorSaveBtn" onclick="saveEditor()">Save</button>
+      <button class="delete-btn-cancel" onclick="closeEditor()">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- Delete Confirmation Modal -->
 <div class="modal-overlay" id="deleteModal">
   <div class="modal">
@@ -1948,6 +2031,8 @@
           if (overlay.id === 'renameModal') return closeRenameModal();
           if (overlay.id === 'moveModal') return closeMoveModal();
           if (overlay.id === 'imagePreviewModal') return closeImagePreview();
+          if (overlay.id === 'newFileModal') return closeNewFileModal();
+          if (overlay.id === 'editorModal') return closeEditor();
           overlay.classList.remove('open');
         }
       });
@@ -2071,6 +2156,9 @@
           fileTableContent += file.isEpub ? '<td><span class="epub-badge">EPUB</span></td>' : `<td>${escapeHtml(file.name.split('.').pop().toUpperCase())}</td>`;
           fileTableContent += `<td>${formatFileSize(file.size)}</td>`;
           fileTableContent += `<td class="actions-col"><div class="action-icon-group">`;
+          if (isEditableTextFile(file.name)) {
+            fileTableContent += `<button class="edit-btn" onclick="openEditor('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}', ${file.size})" title="Edit text">📝</button>`;
+          }
           fileTableContent += `<button class="move-btn" onclick="openMoveModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}' )" title="Move file">📂</button>`;
           fileTableContent += `<button class="rename-btn" onclick="openRenameModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}' )" title="Rename file">✏️</button>`;
           fileTableContent += `<button class="delete-btn" onclick="openDeleteModal('${file.name.replaceAll("'", "\\'")}', '${filePath.replaceAll("'", "\\'")}', false)" title="Delete file">🗑️</button>`;
@@ -3033,6 +3121,183 @@
   function closeFolderModal() {
     document.getElementById('folderModal').classList.remove('open');
   }
+
+  // --- Text editor (minutaMHX) ---
+  // Edits go through the existing endpoints. /upload refuses to overwrite, so a
+  // save writes "<name>.mhxsave" first, then deletes the original and renames
+  // the temp file into place; the new text is on the card before the old is gone.
+  const EDITABLE_TEXT_RE = /\.(txt|md|markdown|csv|log|json|ini|ya?ml|xml|html?|css|js)$/i;
+  const EDITOR_MAX_BYTES = 1024 * 1024;
+  const EDITOR_TEMP_SUFFIX = '.mhxsave';
+  let editorState = null;  // { name, path, dir, isNew, saved, wroteToCard }
+
+  function isEditableTextFile(name) {
+    return EDITABLE_TEXT_RE.test(name);
+  }
+
+  function parentDir(filePath) {
+    const idx = filePath.lastIndexOf('/');
+    return idx <= 0 ? '/' : filePath.substring(0, idx);
+  }
+
+  function joinPath(dir, name) {
+    return (dir.endsWith('/') ? dir : dir + '/') + name;
+  }
+
+  function editorDirty() {
+    return !!editorState && document.getElementById('editorText').value !== editorState.saved;
+  }
+
+  function setEditorStatus(message) {
+    document.getElementById('editorStatus').textContent = message;
+  }
+
+  function openNewFileModal() {
+    document.getElementById('newFilePathDisplay').textContent = currentPath === '/' ? '/ 🏠' : currentPath;
+    const input = document.getElementById('newFileName');
+    input.value = '';
+    document.getElementById('createNewFileBtn').disabled = true;
+    document.getElementById('newFileModal').classList.add('open');
+    setTimeout(() => input.focus(), 50);
+    input.onkeydown = (e) => { if (e.key === 'Enter' && e.target.value.trim()) createNewFile(); };
+  }
+
+  function closeNewFileModal() {
+    document.getElementById('newFileModal').classList.remove('open');
+  }
+
+  async function createNewFile() {
+    let name = document.getElementById('newFileName').value.trim();
+    if (!/^(?!\.)[^"*:<>?\/\\|]+$/.test(name)) {
+      alert('File name cannot start with a dot or contain " * : < > ? / \\ |');
+      return;
+    }
+    if (!/\.[^.]+$/.test(name)) name += '.txt';
+    if (!isEditableTextFile(name)) {
+      alert('Only text files can be created here (.txt, .md, ...).');
+      return;
+    }
+    try {
+      const existing = await fetchExistingUploadNames();
+      if (existing.has(name.toLowerCase())) {
+        alert('A file named "' + name + '" already exists in this folder.');
+        return;
+      }
+    } catch (e) {
+      // Listing failed; the upload itself still refuses to overwrite.
+    }
+    closeNewFileModal();
+    showEditor({ name, path: joinPath(currentPath, name), dir: currentPath, isNew: true, saved: '' });
+  }
+
+  async function openEditor(name, path, size) {
+    if (size > EDITOR_MAX_BYTES) {
+      alert('This file is too large to edit in the browser (limit 1 MB).');
+      return;
+    }
+    let text;
+    try {
+      const response = await fetch(downloadUrl(path) + '&_=' + Date.now());
+      if (!response.ok) throw new Error(await response.text() || response.statusText);
+      text = await response.text();
+    } catch (e) {
+      alert('Could not open ' + name + ': ' + e.message);
+      return;
+    }
+    showEditor({ name, path, dir: parentDir(path), isNew: false, saved: text });
+  }
+
+  function showEditor(state) {
+    editorState = state;
+    document.getElementById('editorFileName').textContent = state.name;
+    const textarea = document.getElementById('editorText');
+    textarea.value = state.saved;
+    setEditorStatus(state.isNew ? 'New file, not saved yet' : 'Ctrl+S to save');
+    document.getElementById('editorModal').classList.add('open');
+    setTimeout(() => textarea.focus(), 50);
+  }
+
+  function closeEditor() {
+    if (editorDirty() && !confirm('Discard unsaved changes?')) return;
+    const refreshList = editorState && editorState.wroteToCard;
+    document.getElementById('editorModal').classList.remove('open');
+    editorState = null;
+    // Sizes and new files only show up after a reload, as with New Folder.
+    if (refreshList) window.location.reload();
+  }
+
+  async function postForm(url, fields) {
+    const formData = new FormData();
+    for (const [key, value] of Object.entries(fields)) formData.append(key, value);
+    const response = await fetch(url, { method: 'POST', body: formData });
+    if (!response.ok) throw new Error(await response.text() || response.statusText);
+  }
+
+  async function uploadText(dir, name, text) {
+    const formData = new FormData();
+    formData.append('file', new Blob([text], { type: 'text/plain' }), name);
+    const response = await fetch('/upload?path=' + encodeURIComponent(dir), { method: 'POST', body: formData });
+    if (!response.ok) throw new Error(await response.text() || response.statusText);
+  }
+
+  async function saveEditor() {
+    if (!editorState) return;
+    const state = editorState;
+    const text = document.getElementById('editorText').value;
+    const saveBtn = document.getElementById('editorSaveBtn');
+    saveBtn.disabled = true;
+    setEditorStatus('Saving...');
+    try {
+      if (state.isNew) {
+        await uploadText(state.dir, state.name, text);
+        state.isNew = false;
+      } else {
+        const tempName = state.name + EDITOR_TEMP_SUFFIX;
+        const tempPath = joinPath(state.dir, tempName);
+        // Clear a temp file left behind by an earlier interrupted save.
+        try { await postForm('/delete', { path: tempPath }); } catch (e) { /* usually absent */ }
+        await uploadText(state.dir, tempName, text);
+        try {
+          await postForm('/delete', { path: state.path });
+        } catch (e) {
+          throw new Error('Could not replace the original (' + e.message + '). Your text is saved as ' + tempName);
+        }
+        try {
+          await postForm('/rename', { path: tempPath, name: state.name });
+        } catch (e) {
+          throw new Error('Saved as ' + tempName + ' but could not rename it (' + e.message + ')');
+        }
+      }
+      state.saved = text;
+      state.wroteToCard = true;
+      setEditorStatus('Saved ' + new Date().toLocaleTimeString());
+    } catch (e) {
+      setEditorStatus('Save failed');
+      alert('Save failed: ' + e.message);
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (!editorState) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+      e.preventDefault();
+      saveEditor();
+    } else if (e.key === 'Escape') {
+      closeEditor();
+    } else if (e.key === 'Tab' && e.target.id === 'editorText') {
+      e.preventDefault();
+      e.target.setRangeText('\t', e.target.selectionStart, e.target.selectionEnd, 'end');
+    }
+  });
+
+  window.addEventListener('beforeunload', (e) => {
+    if (editorDirty()) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
 
   // Toggle select-all checkbox
   function toggleSelectAll(master) {
