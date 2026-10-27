@@ -40,7 +40,7 @@ void BootActivity::onEnter() {
   renderer.drawCenteredText(
       UI_18_FONT_ID,
       titleY,
-      "Minuta",
+      "MinutaMHX",
       true,
       EpdFontFamily::REGULAR);
 
