@@ -501,7 +501,9 @@ void SleepActivity::onEnter() {
       fromTimeout &&
       SETTINGS.quickResumeSleepScreen == CrossPointSettings::QUICK_RESUME_SLEEP_SCREEN::QUICK_RESUME_AFTER_TIMEOUT;
 
-  if (renderQuickResume) {
+  // Last Screen keeps whatever page is on the panel and just stamps the moon.
+  // Skip the "Entering sleep" popup so it doesn't get frozen into the frame.
+  if (renderQuickResume || SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::LAST_SCREEN) {
     return renderLastScreenSleepScreen();
   }
 

@@ -464,6 +464,11 @@ void setup() {
                             : isPersistedSleepWake ? BootResume::SplashlessWake
                                                    : BootResume::Splash;
   bool needsWakeRefresh = false;
+  // Last Screen froze the reader page on the panel; reopen that book (at its
+  // saved position) instead of Home, and skip the splash so the page stays up.
+  const bool resumeReaderOnWake = resume == BootResume::SplashlessWake &&
+                                  SETTINGS.sleepScreen == CrossPointSettings::SLEEP_SCREEN_MODE::LAST_SCREEN &&
+                                  APP_STATE.lastSleepFromReader && !APP_STATE.openEpubPath.empty();
 
   setupDisplayAndFonts(resume != BootResume::Splash);
 
@@ -477,7 +482,7 @@ void setup() {
       // Re-arm the flag first so a failed boot cannot leave splash suppressed.
       APP_STATE.showBootScreen = true;
       APP_STATE.saveToFile();
-      activityManager.goToBoot();
+      if (!resumeReaderOnWake) activityManager.goToBoot();
       break;
     case BootResume::Splash:
       activityManager.goToBoot();
@@ -506,8 +511,10 @@ void setup() {
     // through to the sleep-wake "resume reader" logic, which fires on stale
     // openEpubPath + lastSleepFromReader from a prior session.
     activityManager.goHome();
+  } else if (resumeReaderOnWake) {
+    activityManager.goToReader(APP_STATE.openEpubPath);
   } else {
-    // Minuta always opens Home after a normal boot or wake.
+    // Minuta opens Home after a normal boot or wake.
     activityManager.goHome(HomeMenuItem::NONE, needsWakeRefresh);
   }
 

@@ -205,7 +205,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
     std::vector<StrId> sleepScreenValues = {
         StrId::STR_DEFAULT,
         StrId::STR_CUSTOM,
-        StrId::STR_COVER
+        StrId::STR_COVER,
+        StrId::STR_LAST_SCREEN
     };
 
     std::vector<SettingInfo> v = {
