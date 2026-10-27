@@ -1,4 +1,5 @@
 #include "HomeActivity.h"
+#include "../reader/TxtEditorActivity.h"
 #include "../settings/ClearCacheActivity.h"
 
 #include <Bitmap.h>
@@ -336,6 +337,12 @@ void HomeActivity::loop() {
       return;
     }
 
+    if (mappedInput.wasReleased(MappedInputManager::Button::Left) && canEditRecentTxt()) {
+      startActivityForResult(std::make_unique<TxtEditorActivity>(renderer, mappedInput, recentBooks[0].path),
+                             [this](const ActivityResult&) { onEnter(); });
+      return;
+    }
+
     // Other logical front-button roles intentionally do nothing here.
   }
 
@@ -432,7 +439,7 @@ void HomeActivity::render(RenderLock&&) {
   const auto labels =
       isQuartum
           ? mappedInput.mapLabels("Menu", tr(STR_HOME_READ), "Prev", "Next")
-          : mappedInput.mapLabels("Menu", "", "", tr(STR_HOME_READ));
+          : mappedInput.mapLabels("Menu", "", canEditRecentTxt() ? tr(STR_EDIT) : "", tr(STR_HOME_READ));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
@@ -444,6 +451,11 @@ void HomeActivity::render(RenderLock&&) {
 }
 
 void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToReader(path); }
+
+bool HomeActivity::canEditRecentTxt() const {
+  return SETTINGS.uiTheme == CrossPointSettings::UI_THEME::SOLUM && !recentBooks.empty() &&
+         FsHelpers::hasTxtExtension(recentBooks[0].path);
+}
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 

@@ -57,6 +57,8 @@ class HomeActivity final : public Activity {
     return HomeMenuItem::NONE;
   }
   void onSelectBook(const std::string& path);
+  // Solum shows EDIT on the Left button when the most recent book is a .txt file.
+  bool canEditRecentTxt() const;
   void onFileBrowserOpen();
   void onRecentsOpen();
   void switchTheme(MappedInputManager::Button heldButton);
