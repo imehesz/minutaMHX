@@ -381,6 +381,7 @@ enum class StrId : uint16_t {
   STR_TXT_EDITOR_OPEN_FAILED,
   STR_TXT_EDITOR_TOO_LARGE,
   STR_TXT_EDITOR_LOW_MEMORY,
+  STR_INVERT_COLORS,
   // Sentinel - must be last
   _COUNT
 };

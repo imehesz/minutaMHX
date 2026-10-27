@@ -58,8 +58,8 @@ void ActivityManager::renderTaskLoop() {
     RenderLock lock;
     if (currentActivity) {
       HalPowerManager::Lock powerLock;  // Ensure we don't go into low-power mode while rendering
-      // Minuta always uses the X4's normal display polarity.
-      display.setInverted(false);
+      // Resolved per render so toggling Invert Colors applies on the next frame.
+      display.setInverted(SETTINGS.screenInverted != 0);
       currentActivity->render(std::move(lock));
     }
     // Notify any task blocked in requestUpdateAndWait() that the render is done.

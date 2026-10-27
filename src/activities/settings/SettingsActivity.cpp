@@ -80,6 +80,7 @@ void SettingsActivity::rebuildSettingsLists() {
 
   addSettingsSection("Appearance", [&] {
     appendSetting(deviceSettings, StrId::STR_SUNLIGHT_FADING_FIX);
+    appendSetting(deviceSettings, StrId::STR_INVERT_COLORS);
   });
 
   addSettingsSection("Controls", [&] {
