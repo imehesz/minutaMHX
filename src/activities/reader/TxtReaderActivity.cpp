@@ -1,15 +1,21 @@
 #include "TxtReaderActivity.h"
 
 #include <BidiUtils.h>
+#include <Epub/Page.h>
+#include <Epub/parsers/ChapterHtmlSlimParser.h>
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <HalStorage.h>
 #include <I18n.h>
+#include <MarkdownToHtml.h>
 #include <Memory.h>
 #include <Serialization.h>
 #include <Utf8.h>
 
+#include <algorithm>
+
 #include "CrossPointSettings.h"
+#include "FsHelpers.h"
 #include "ProgressFile.h"
 #include "ReaderActivity.h"
 #include "ReaderUtils.h"
@@ -21,6 +27,25 @@ constexpr size_t CHUNK_SIZE = 8 * 1024;  // 8KB chunk for reading
 // Cache file magic and version
 constexpr uint32_t CACHE_MAGIC = 0x54585449;  // "TXTI"
 constexpr uint8_t CACHE_VERSION = 3;          // Increment when cache format changes
+constexpr uint32_t MD_CACHE_MAGIC = 0x4D445047;  // "MDPG"
+constexpr uint8_t MD_CACHE_VERSION = 1;
+// Longer source lines are split; only reachable with pathological files.
+constexpr size_t MD_MAX_LINE_BYTES = 16 * 1024;
+
+// Reading-area margins shared by the raw and rendered views: bezel + screen margin, with the
+// bottom clearing the status bar.
+void readerMargins(GfxRenderer& renderer, int& top, int& right, int& bottom, int& left) {
+  renderer.getOrientedViewableTRBL(&top, &right, &bottom, &left);
+  const uint8_t screenMargin = SETTINGS.screenMargin;
+  top += screenMargin;
+  left += screenMargin;
+  right += screenMargin;
+  const auto statusBar = SETTINGS.statusBarSpec();
+  const int statusPadding = (statusBar.textLaneVisible() ? 11 : 0) + statusBar.progressBarHeightPx;
+  bottom += std::max(screenMargin, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight())) + statusPadding;
+}
+
+int clampPage(const int page, const int totalPages) { return std::max(0, std::min(page, totalPages - 1)); }
 }  // namespace
 
 bool TxtReaderActivity::loadBook() {
@@ -34,6 +59,8 @@ bool TxtReaderActivity::loadBook() {
     return false;
   }
   txt->setupCacheDir();
+  isMarkdown = FsHelpers::hasMarkdownExtension(bookPath);
+  showRendered = isMarkdown;
   return true;
 }
 
@@ -48,15 +75,8 @@ void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
   cachedParagraphAlignment = SETTINGS.paragraphAlignment;
 
   // Calculate viewport dimensions
-  renderer.getOrientedViewableTRBL(&cachedOrientedMarginTop, &cachedOrientedMarginRight, &cachedOrientedMarginBottom,
-                                   &cachedOrientedMarginLeft);
-  cachedOrientedMarginTop += cachedScreenMargin;
-  cachedOrientedMarginLeft += cachedScreenMargin;
-  cachedOrientedMarginRight += cachedScreenMargin;
-  const auto statusBar = SETTINGS.statusBarSpec();
-  const int statusPadding = (statusBar.textLaneVisible() ? 11 : 0) + statusBar.progressBarHeightPx;
-  cachedOrientedMarginBottom +=
-      std::max(cachedScreenMargin, static_cast<uint8_t>(UITheme::getInstance().getStatusBarHeight())) + statusPadding;
+  readerMargins(renderer, cachedOrientedMarginTop, cachedOrientedMarginRight, cachedOrientedMarginBottom,
+                cachedOrientedMarginLeft);
 
   viewportWidth = renderer.getScreenWidth() - cachedOrientedMarginLeft - cachedOrientedMarginRight;
   const int viewportHeight = renderer.getScreenHeight() - cachedOrientedMarginTop - cachedOrientedMarginBottom;
@@ -77,6 +97,7 @@ void TxtReaderActivity::initializeReader(GfxRenderer& renderer) {
 
   // Load saved progress
   loadProgress();
+  currentPage = clampPage(savedRawPage, totalPages);
 
   initialized = true;
 }
@@ -244,6 +265,22 @@ void TxtReaderActivity::renderBook() {
     return;
   }
 
+  if (toggleRequested.exchange(false)) {
+    switchView();
+  }
+
+  if (showRendered && !mdInitialized && !initializeMarkdown()) {
+    LOG_ERR("TRS", "Markdown rendering failed, showing raw text");
+    isMarkdown = false;
+    showRendered = false;
+  }
+
+  if (showRendered) {
+    renderMarkdownPage();
+    saveProgress();
+    return;
+  }
+
   if (!initialized) {
     initializeReader(renderer);
   }
@@ -313,20 +350,25 @@ void TxtReaderActivity::renderPage(GfxRenderer& renderer) {
     }
   };
 
+  presentPage(renderLines);
+}
+
+template <typename DrawFn>
+void TxtReaderActivity::presentPage(DrawFn&& draw) {
   // Font prewarm: scan pass accumulates text, then prewarm, then real render
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  renderLines();      // scan pass
+  draw();             // scan pass
   renderStatusBar();  // scan: a CJK title joins the batch prewarm
   scope.endScanAndPrewarm();
 
   // BW rendering
-  renderLines();
+  draw();
   renderStatusBar();
 
   if (SETTINGS.textAntiAliasing) {
     ReaderUtils::displayBaseWithRefreshCycle(renderer, pagesUntilFullRefresh);
-    ReaderUtils::renderAntiAliased(renderer, [&renderLines]() { renderLines(); });
+    ReaderUtils::renderAntiAliased(renderer, [&draw]() { draw(); });
   } else {
     ReaderUtils::displayWithRefreshCycle(renderer, pagesUntilFullRefresh);
   }
@@ -337,13 +379,18 @@ void TxtReaderActivity::renderStatusBar() const {
   std::string title;
   if (SETTINGS.statusBarSpec().showsTitle()) {
     title = txt->getTitle();
+    if (isMarkdown && !showRendered) {
+      title += " (";
+      title += tr(STR_MD_RAW_VIEW);
+      title += ")";
+    }
   }
   GUI.drawStatusBar(renderer, progress, currentPage + 1, totalPages, title);
 }
 
 bool TxtReaderActivity::pageTurn(bool isForward) {
-  // Ignore paging until initializeReader has established the page index
-  if (!initialized) {
+  // Ignore paging until the visible view has established its page index
+  if (!viewReady()) {
     return false;
   }
   if (isForward) {
@@ -361,7 +408,7 @@ bool TxtReaderActivity::pageTurn(bool isForward) {
 }
 
 bool TxtReaderActivity::skipPages(int amount) {
-  if (!initialized) {
+  if (!viewReady()) {
     return false;
   }
   int newPage = currentPage + amount;
@@ -377,16 +424,19 @@ bool TxtReaderActivity::skipPages(int amount) {
   return false;
 }
 
-bool TxtReaderActivity::isAtEndOfBook() const { return initialized && currentPage >= totalPages; }
+bool TxtReaderActivity::isAtEndOfBook() const { return viewReady() && currentPage >= totalPages; }
 
 void TxtReaderActivity::onReturnFromEndOfBook() { currentPage = totalPages > 0 ? totalPages - 1 : 0; }
 
 void TxtReaderActivity::saveProgress() const {
+  // Bytes 0-1: raw view page, bytes 2-3: rendered Markdown page (0 for plain text files).
+  const int rawPage = showRendered ? savedRawPage : currentPage;
+  const int mdPage = showRendered ? currentPage : savedMdPage;
   uint8_t data[4];
-  data[0] = currentPage & 0xFF;
-  data[1] = (currentPage >> 8) & 0xFF;
-  data[2] = 0;
-  data[3] = 0;
+  data[0] = rawPage & 0xFF;
+  data[1] = (rawPage >> 8) & 0xFF;
+  data[2] = mdPage & 0xFF;
+  data[3] = (mdPage >> 8) & 0xFF;
   if (!ProgressFile::writeAtomic(txt->getCachePath(), data, sizeof(data))) {
     LOG_ERR("TRS", "Failed to save progress: page %d", currentPage);
   }
@@ -397,14 +447,9 @@ void TxtReaderActivity::loadProgress() {
   if (Storage.openFileForRead("TRS", txt->getCachePath() + "/progress.bin", f)) {
     uint8_t data[4];
     if (f.read(data, 4) == 4) {
-      currentPage = data[0] + (data[1] << 8);
-      if (currentPage >= totalPages) {
-        currentPage = totalPages - 1;
-      }
-      if (currentPage < 0) {
-        currentPage = 0;
-      }
-      LOG_DBG("TRS", "Loaded progress: page %d/%d", currentPage, totalPages);
+      savedRawPage = data[0] + (data[1] << 8);
+      savedMdPage = data[2] + (data[3] << 8);
+      LOG_DBG("TRS", "Loaded progress: raw page %d, rendered page %d", savedRawPage, savedMdPage);
     }
   }
 }
@@ -527,4 +572,261 @@ ScreenshotInfo TxtReaderActivity::getScreenshotInfo() const {
   info.progressPercent = totalPages > 0 ? static_cast<int>((currentPage + 1) * 100.0f / totalPages + 0.5f) : 0;
   if (info.progressPercent > 100) info.progressPercent = 100;
   return info;
+}
+
+bool TxtReaderActivity::handleFormatInput() {
+  // At the end-of-book screen Confirm belongs to its menu.
+  if (!isMarkdown || isAtEndOfBook() || !mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    return false;
+  }
+  toggleRequested = true;
+  requestUpdate();
+  return true;
+}
+
+// Flips between the rendered and raw views, landing at the same relative position (the two views
+// paginate differently, so an exact line match isn't available).
+void TxtReaderActivity::switchView() {
+  if (!isMarkdown) return;
+  const float position = totalPages > 0 ? static_cast<float>(currentPage) / static_cast<float>(totalPages) : 0.0f;
+  if (showRendered) {
+    savedMdPage = currentPage;
+  } else {
+    savedRawPage = currentPage;
+  }
+  showRendered = !showRendered;
+
+  if (showRendered) {
+    if (!mdInitialized && !initializeMarkdown()) {
+      LOG_ERR("TRS", "Markdown rendering failed, staying on raw text");
+      isMarkdown = false;
+      showRendered = false;
+      currentPage = savedRawPage;
+      return;
+    }
+    totalPages = static_cast<int>(mdPageOffsets.size());
+  } else {
+    if (!initialized) {
+      initializeReader(renderer);
+    }
+    totalPages = static_cast<int>(pageOffsets.size());
+  }
+  currentPage = clampPage(static_cast<int>(position * static_cast<float>(totalPages)), totalPages);
+  // A full refresh clears the previous view's ghosting.
+  pagesUntilFullRefresh = 1;
+}
+
+bool TxtReaderActivity::initializeMarkdown() {
+  int marginTop, marginRight, marginBottom, marginLeft;
+  readerMargins(renderer, marginTop, marginRight, marginBottom, marginLeft);
+  mdMarginTop = marginTop;
+  mdMarginLeft = marginLeft;
+  const auto viewportWidth = static_cast<uint16_t>(renderer.getScreenWidth() - marginLeft - marginRight);
+  const auto viewportHeight = static_cast<uint16_t>(renderer.getScreenHeight() - marginTop - marginBottom);
+  mdSpec = SETTINGS.readerRenderSpec(viewportWidth, viewportHeight);
+
+  if (!loadMarkdownIndex()) {
+    GUI.drawPopup(renderer, tr(STR_INDEXING), true);
+    const std::string htmlPath = txt->getCachePath() + "/md.html";
+    const bool built = convertMarkdown(htmlPath) && buildMarkdownPages(htmlPath);
+    Storage.remove(htmlPath.c_str());
+    if (!built) {
+      mdPageOffsets.clear();
+      return false;
+    }
+    saveMarkdownIndex();
+  }
+
+  loadProgress();
+  totalPages = static_cast<int>(mdPageOffsets.size());
+  currentPage = clampPage(savedMdPage, totalPages);
+  mdInitialized = true;
+  return true;
+}
+
+bool TxtReaderActivity::convertMarkdown(const std::string& htmlPath) const {
+  HalFile out;
+  if (!Storage.openFileForWrite("TRS", htmlPath, out)) {
+    return false;
+  }
+  MarkdownToHtml converter({&out, [](void* ctx, const char* data, const size_t len) {
+                              return static_cast<HalFile*>(ctx)->write(data, len) == len;
+                            }});
+  if (!converter.begin()) {
+    return false;
+  }
+
+  auto buffer = makeUniqueNoThrow<uint8_t[]>(CHUNK_SIZE);
+  if (!buffer) {
+    LOG_ERR("TRS", "OOM: %zu bytes for Markdown conversion", CHUNK_SIZE);
+    return false;
+  }
+  std::string line;
+  line.reserve(256);
+  const size_t fileSize = txt->getFileSize();
+  size_t offset = 0;
+  while (offset < fileSize) {
+    const size_t chunk = std::min(CHUNK_SIZE, fileSize - offset);
+    if (!txt->readContent(buffer.get(), offset, chunk)) {
+      LOG_ERR("TRS", "Markdown read failed at %zu", offset);
+      return false;
+    }
+    size_t start = 0;
+    // Skip a UTF-8 byte order mark so a leading "# Title" is still a heading.
+    if (offset == 0 && chunk >= 3 && buffer[0] == 0xEF && buffer[1] == 0xBB && buffer[2] == 0xBF) {
+      start = 3;
+    }
+    for (size_t i = start; i < chunk; i++) {
+      const char c = static_cast<char>(buffer[i]);
+      if (c == '\n' || line.size() >= MD_MAX_LINE_BYTES) {
+        if (!converter.feedLine(line)) return false;
+        line.clear();
+        if (c == '\n') continue;
+      }
+      line.push_back(c);
+    }
+    offset += chunk;
+    vTaskDelay(1);
+  }
+  if (!line.empty() && !converter.feedLine(line)) {
+    return false;
+  }
+  return converter.finish();
+}
+
+bool TxtReaderActivity::buildMarkdownPages(const std::string& htmlPath) {
+  const std::string pagesPath = txt->getCachePath() + "/md_pages.bin";
+  HalFile pages;
+  if (!Storage.openFileForWrite("TRS", pagesPath, pages)) {
+    return false;
+  }
+
+  mdPageOffsets.clear();
+  // ~2 KB of source per page is a typical density; growth past the estimate is harmless.
+  mdPageOffsets.reserve(txt->getFileSize() / 2048 + 4);
+  bool writeOk = true;
+  const std::string noBasePath;
+  // No Epub: the converter never emits <img> or links, the only parser paths that read from one.
+  // Paragraph spacing and list markers come from the generated markup, so the user's paragraph-spacing
+  // setting and the parser's own bullets are switched off.
+  auto parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
+      nullptr, htmlPath, renderer, mdSpec.fontId, mdSpec.lineCompression, /*extraParagraphSpacing=*/false,
+      mdSpec.paragraphAlignment, mdSpec.viewportWidth, mdSpec.viewportHeight, mdSpec.hyphenationEnabled,
+      mdSpec.focusReadingEnabled,
+      [this, &pages, &writeOk](std::unique_ptr<Page> page, uint16_t, uint16_t, uint32_t) {
+        if (!writeOk) return;
+        mdPageOffsets.push_back(static_cast<uint32_t>(pages.position()));
+        writeOk = page->serialize(pages);
+      },
+      /*embeddedStyle=*/true, noBasePath, noBasePath, /*imageRendering=*/2, std::vector<std::string>{},
+      /*popupFn=*/nullptr, /*cssParser=*/nullptr, /*blockGap=*/0, /*suppressListMarkers=*/true,
+      /*inlineStylesWithoutCss=*/true);
+  if (!parser) {
+    LOG_ERR("TRS", "OOM: ChapterHtmlSlimParser");
+    return false;
+  }
+  const bool parsed = parser->parseAndBuildPages();
+  parser.reset();
+  if (!parsed || !writeOk) {
+    LOG_ERR("TRS", "Markdown page build failed (parsed=%d, written=%d)", parsed, writeOk);
+    return false;
+  }
+  LOG_DBG("TRS", "Built %zu Markdown pages", mdPageOffsets.size());
+  return true;
+}
+
+bool TxtReaderActivity::loadMarkdownIndex() {
+  HalFile f;
+  if (!Storage.openFileForRead("TRS", txt->getCachePath() + "/md_index.bin", f)) {
+    return false;
+  }
+  if (!Storage.exists((txt->getCachePath() + "/md_pages.bin").c_str())) {
+    return false;
+  }
+
+  uint32_t magic;
+  uint8_t version;
+  uint32_t fileSize;
+  int32_t fontId;
+  float lineCompression;
+  uint8_t alignment, hyphenation, focusReading;
+  uint16_t width, height;
+  uint32_t numPages;
+  serialization::readPod(f, magic);
+  serialization::readPod(f, version);
+  serialization::readPod(f, fileSize);
+  serialization::readPod(f, fontId);
+  serialization::readPod(f, lineCompression);
+  serialization::readPod(f, alignment);
+  serialization::readPod(f, hyphenation);
+  serialization::readPod(f, focusReading);
+  serialization::readPod(f, width);
+  serialization::readPod(f, height);
+  serialization::readPod(f, numPages);
+  if (magic != MD_CACHE_MAGIC || version != MD_CACHE_VERSION || fileSize != txt->getFileSize() ||
+      fontId != mdSpec.fontId || lineCompression != mdSpec.lineCompression || alignment != mdSpec.paragraphAlignment ||
+      hyphenation != mdSpec.hyphenationEnabled || focusReading != mdSpec.focusReadingEnabled ||
+      width != mdSpec.viewportWidth || height != mdSpec.viewportHeight) {
+    LOG_DBG("TRS", "Markdown page cache stale, rebuilding");
+    return false;
+  }
+
+  mdPageOffsets.clear();
+  mdPageOffsets.reserve(numPages);
+  for (uint32_t i = 0; i < numPages; i++) {
+    uint32_t offset;
+    serialization::readPod(f, offset);
+    mdPageOffsets.push_back(offset);
+  }
+  LOG_DBG("TRS", "Loaded Markdown page cache: %zu pages", mdPageOffsets.size());
+  return true;
+}
+
+void TxtReaderActivity::saveMarkdownIndex() const {
+  HalFile f;
+  if (!Storage.openFileForWrite("TRS", txt->getCachePath() + "/md_index.bin", f)) {
+    LOG_ERR("TRS", "Failed to save Markdown page cache");
+    return;
+  }
+  serialization::writePod(f, MD_CACHE_MAGIC);
+  serialization::writePod(f, MD_CACHE_VERSION);
+  serialization::writePod(f, static_cast<uint32_t>(txt->getFileSize()));
+  serialization::writePod(f, static_cast<int32_t>(mdSpec.fontId));
+  serialization::writePod(f, mdSpec.lineCompression);
+  serialization::writePod(f, mdSpec.paragraphAlignment);
+  serialization::writePod(f, static_cast<uint8_t>(mdSpec.hyphenationEnabled));
+  serialization::writePod(f, static_cast<uint8_t>(mdSpec.focusReadingEnabled));
+  serialization::writePod(f, mdSpec.viewportWidth);
+  serialization::writePod(f, mdSpec.viewportHeight);
+  serialization::writePod(f, static_cast<uint32_t>(mdPageOffsets.size()));
+  for (const uint32_t offset : mdPageOffsets) {
+    serialization::writePod(f, offset);
+  }
+}
+
+void TxtReaderActivity::renderMarkdownPage() {
+  renderer.clearScreen();
+  if (mdPageOffsets.empty()) {
+    renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_EMPTY_FILE), true, EpdFontFamily::BOLD);
+    renderer.displayBuffer();
+    return;
+  }
+  currentPage = clampPage(currentPage, totalPages);
+
+  std::unique_ptr<Page> page;
+  {
+    HalFile f;
+    if (Storage.openFileForRead("TRS", txt->getCachePath() + "/md_pages.bin", f) &&
+        f.seek(mdPageOffsets[currentPage])) {
+      page = Page::deserialize(f);
+    }
+  }
+  if (!page) {
+    LOG_ERR("TRS", "Failed to load Markdown page %d", currentPage);
+    renderer.displayBuffer();
+    return;
+  }
+
+  const int fontId = mdSpec.fontId;
+  presentPage([&]() { page->render(renderer, fontId, mdMarginLeft, mdMarginTop); });
 }

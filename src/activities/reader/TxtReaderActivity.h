@@ -1,7 +1,9 @@
 #pragma once
 
+#include <Epub/ReaderRenderSpec.h>
 #include <Txt.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -31,6 +33,33 @@ class TxtReaderActivity final : public ReaderActivity {
   int cachedOrientedMarginBottom = 0;
   int cachedOrientedMarginLeft = 0;
 
+  // .md files open in a rendered view: the source is converted to XHTML (MarkdownToHtml) and laid out
+  // by the EPUB engine into md_pages.bin, indexed by md_index.bin. Confirm toggles to the raw text view,
+  // which is the plain TXT path above. currentPage/totalPages always describe the visible view; the
+  // hidden view's page is parked in savedRawPage/savedMdPage.
+  bool isMarkdown = false;
+  bool showRendered = false;
+  bool mdInitialized = false;
+  std::atomic<bool> toggleRequested{false};
+  std::vector<uint32_t> mdPageOffsets;
+  ReaderRenderSpec mdSpec;
+  int mdMarginTop = 0;
+  int mdMarginLeft = 0;
+  int savedRawPage = 0;
+  int savedMdPage = 0;
+
+  bool viewReady() const { return showRendered ? mdInitialized : initialized; }
+  bool initializeMarkdown();
+  bool convertMarkdown(const std::string& htmlPath) const;
+  bool buildMarkdownPages(const std::string& htmlPath);
+  bool loadMarkdownIndex();
+  void saveMarkdownIndex() const;
+  void renderMarkdownPage();
+  void switchView();
+  bool handleFormatInput() override;
+
+  template <typename DrawFn>
+  void presentPage(DrawFn&& draw);
   void renderPage(GfxRenderer& renderer);
   void initializeReader(GfxRenderer& renderer);
   bool loadPageAtOffset(GfxRenderer& renderer, size_t offset, std::vector<std::string>& outLines, size_t& nextOffset);

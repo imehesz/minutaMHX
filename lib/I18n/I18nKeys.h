@@ -385,6 +385,7 @@ enum class StrId : uint16_t {
   STR_LAST_SCREEN,
   STR_VERSION,
   STR_ABOUT_INFO,
+  STR_MD_RAW_VIEW,
   // Sentinel - must be last
   _COUNT
 };

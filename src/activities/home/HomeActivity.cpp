@@ -454,7 +454,7 @@ void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToR
 
 bool HomeActivity::canEditRecentTxt() const {
   return SETTINGS.uiTheme == CrossPointSettings::UI_THEME::SOLUM && !recentBooks.empty() &&
-         FsHelpers::hasTxtExtension(recentBooks[0].path);
+         (FsHelpers::hasTxtExtension(recentBooks[0].path) || FsHelpers::hasMarkdownExtension(recentBooks[0].path));
 }
 
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }

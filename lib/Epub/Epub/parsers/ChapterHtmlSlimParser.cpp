@@ -782,6 +782,8 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       CssStyle inlineStyle = CssParser::parseInlineStyle(styleAttr);
       cssStyle.applyOver(inlineStyle);
     }
+  } else if (self->inlineStylesWithoutCss && !styleAttr.empty()) {
+    cssStyle = CssParser::parseInlineStyle(styleAttr);
   }
 
   // HTML dir attribute overrides CSS direction (case-insensitive per HTML spec)
