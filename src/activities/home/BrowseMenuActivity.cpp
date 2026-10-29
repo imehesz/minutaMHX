@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "CrossPointSettings.h"
+#include "InspirationsActivity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/FontDownloadActivity.h"
 #include "components/UITheme.h"
@@ -19,6 +20,7 @@ constexpr StrId menuItems[BrowseMenuActivity::MENU_ITEM_COUNT] = {
     StrId::STR_SETTINGS_TITLE,
     StrId::STR_LIBRARY,
     StrId::STR_MENU_RECENT_BOOKS,
+    StrId::STR_INSPIRATIONS,
     StrId::STR_FONT_BROWSER,
 };
 }  // namespace
@@ -57,6 +59,10 @@ void BrowseMenuActivity::activateIndex(const int index) {
       break;
     case 2:
       activityManager.goToRecentBooks();
+      break;
+    case 3:
+      startActivityForResult(std::make_unique<InspirationsActivity>(renderer, mappedInput),
+                             [](const ActivityResult&) {});
       break;
     default:
       startActivityForResult(std::make_unique<FontDownloadActivity>(renderer, mappedInput),
